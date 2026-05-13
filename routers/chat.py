@@ -87,6 +87,19 @@ def _sse(chunk: ChatCompletionChunk) -> str:
     return f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
 
 
+def _build_usage(accum: dict[str, int]) -> Optional[Usage]:
+    """Convert an upstream usage accumulator to a Usage object, or None if empty."""
+    if not accum:
+        return None
+    prompt = accum.get("prompt_tokens", 0)
+    completion = accum.get("completion_tokens", 0)
+    return Usage(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        total_tokens=prompt + completion,
+    )
+
+
 def _build_chunk(
     completion_id: str,
     model: str,
@@ -125,11 +138,18 @@ async def _stream_response(
 
     buffer = ""
     mode: Optional[str] = None  # None=detecting  "content"=streaming  "json"=buffering
+    usage_accum: dict[str, int] = {}
 
     try:
-        async for raw_chunk in stream_upstream_response(
+        async for raw_chunk, usage_data in stream_upstream_response(
             query, history, generation_params=_generation_params(request)
         ):
+            if usage_data is not None:
+                usage_accum.update(usage_data)
+
+            if raw_chunk is None:
+                continue
+
             buffer += raw_chunk
 
             if mode is None:
@@ -218,14 +238,15 @@ async def _stream_response(
         # Response was entirely whitespace up until EOF (unusual)
         yield _sse(_build_chunk(completion_id, request.model, Delta(content=buffer)))
 
-    # Terminal finish chunk — signals end of turn to the client
+    # Terminal finish chunk — signals end of turn to the client.
+    # usage is None when upstream provides no token counts (clients see null, not zeros).
     yield _sse(
         _build_chunk(
             completion_id,
             request.model,
             Delta(),
             finish_reason=finish_reason,
-            usage=Usage(),  # upstream doesn't expose token counts; return zeros
+            usage=_build_usage(usage_accum),
         )
     )
     yield "data: [DONE]\n\n"
@@ -246,10 +267,14 @@ async def _complete_response(
     query, history = messages_to_upstream_format(request)
 
     full_text = ""
-    async for chunk in stream_upstream_response(
+    usage_accum: dict[str, int] = {}
+    async for chunk, usage_data in stream_upstream_response(
         query, history, generation_params=_generation_params(request)
     ):
-        full_text += chunk
+        if usage_data is not None:
+            usage_accum.update(usage_data)
+        if chunk is not None:
+            full_text += chunk
 
     raw_tool_calls = try_parse_tool_calls(full_text)
 
@@ -266,7 +291,7 @@ async def _complete_response(
         created=int(time.time()),
         model=request.model,
         choices=[Choice(message=message, finish_reason=finish_reason)],
-        usage=Usage(),
+        usage=_build_usage(usage_accum),
     )
 
 

@@ -21,11 +21,13 @@ from tests.conftest import iter_sse_chunks
 
 
 def make_text_stream(*chunks: str):
-    """Return an async-generator function that yields the given text chunks."""
+    """Return an async-generator function that yields (text, None) event tuples."""
 
-    async def _stream(*_args, **_kwargs) -> AsyncIterator[str]:
+    async def _stream(
+        *_args, **_kwargs
+    ) -> AsyncIterator[tuple[str | None, dict | None]]:
         for chunk in chunks:
-            yield chunk
+            yield (chunk, None)
 
     return _stream
 
@@ -130,12 +132,11 @@ class TestNonStreaming:
             resp = await client.post("/v1/chat/completions", json=SIMPLE_BODY)
         assert resp.json()["model"] == "gateway-adapter"
 
-    async def test_usage_zeros_returned(self, client: AsyncClient):
+    async def test_usage_null_when_no_upstream_data(self, client: AsyncClient):
+        # Mocked upstream provides no usage events → usage field must be null, not zeros
         with patch("routers.chat.stream_upstream_response", new=make_text_stream("ok")):
             resp = await client.post("/v1/chat/completions", json=SIMPLE_BODY)
-        usage = resp.json()["usage"]
-        assert usage["prompt_tokens"] == 0
-        assert usage["completion_tokens"] == 0
+        assert resp.json()["usage"] is None
 
 
 # ── Streaming tests ───────────────────────────────────────────────────────────
@@ -319,7 +320,7 @@ class TestParameterHandling:
 
         async def capturing_stream(query, history, *, generation_params=None, **_):
             captured["generation_params"] = generation_params
-            yield "ok"
+            yield ("ok", None)
 
         with patch("routers.chat.stream_upstream_response", new=capturing_stream):
             resp = await client.post(
@@ -346,7 +347,7 @@ class TestParameterHandling:
 
         async def capturing_stream(query, history, *, generation_params=None, **_):
             captured["generation_params"] = generation_params
-            yield "ok"
+            yield ("ok", None)
 
         with patch("routers.chat.stream_upstream_response", new=capturing_stream):
             await client.post("/v1/chat/completions", json=SIMPLE_BODY)

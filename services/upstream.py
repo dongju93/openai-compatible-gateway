@@ -34,6 +34,9 @@ from config import get_settings
 
 logger = logging.getLogger(__name__)
 
+# Type alias: each yielded event is either (text, None) or (None, usage_dict)
+UpstreamEvent = tuple[Optional[str], Optional[dict[str, int]]]
+
 
 def _extract_text_from_sse_data(data: str) -> Optional[str]:
     """
@@ -80,17 +83,81 @@ def _extract_text_from_sse_data(data: str) -> Optional[str]:
     return None
 
 
+def _extract_usage_from_sse_data(data: str) -> Optional[dict[str, int]]:
+    """
+    Extract token-usage data from a single SSE ``data:`` payload.
+
+    Returns a partial dict with ``prompt_tokens`` and/or ``completion_tokens``,
+    or None if the payload carries no usage information.
+
+    Handled formats
+    ---------------
+    • Claude native ``message_start``:
+          {"type": "message_start", "message": {"usage": {"input_tokens": N, "output_tokens": K}}}
+      → ``prompt_tokens=N, completion_tokens=K``
+
+    • Claude native ``message_delta`` (final output token count):
+          {"type": "message_delta", "usage": {"output_tokens": M}}
+      → ``completion_tokens=M``  (overwrites the K from message_start)
+
+    • OpenAI-like final chunk:
+          {"usage": {"prompt_tokens": N, "completion_tokens": M}}
+      → ``prompt_tokens=N, completion_tokens=M``
+    """
+    try:
+        obj = json.loads(data)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+
+    event_type = obj.get("type")
+
+    # Claude native: message_start carries input (prompt) token count
+    if event_type == "message_start":
+        msg_usage = obj.get("message", {}).get("usage", {})
+        if msg_usage:
+            return {
+                "prompt_tokens": int(msg_usage.get("input_tokens", 0)),
+                "completion_tokens": int(msg_usage.get("output_tokens", 0)),
+            }
+
+    # Claude native: message_delta carries the definitive output token count
+    if event_type == "message_delta":
+        delta_usage = obj.get("usage", {})
+        if delta_usage and "output_tokens" in delta_usage:
+            return {"completion_tokens": int(delta_usage["output_tokens"])}
+
+    # OpenAI-like: top-level "usage" object (typically in the final streaming chunk)
+    usage_obj = obj.get("usage")
+    if isinstance(usage_obj, dict) and (
+        "prompt_tokens" in usage_obj or "completion_tokens" in usage_obj
+    ):
+        return {
+            "prompt_tokens": int(usage_obj.get("prompt_tokens", 0)),
+            "completion_tokens": int(usage_obj.get("completion_tokens", 0)),
+        }
+
+    return None
+
+
 async def stream_upstream_response(
     query: str,
     history: list[dict],
     api_key_override: Optional[str] = None,
     generation_params: Optional[dict] = None,
-) -> AsyncIterator[str]:
+) -> AsyncIterator[UpstreamEvent]:
     """
-    Call the upstream API (streaming) and yield raw text chunks as they arrive.
+    Call the upstream API (streaming) and yield events as ``(text, usage)`` tuples.
+
+    Each yielded tuple has exactly one non-None field:
+    • ``(text, None)``  — an incremental text fragment
+    • ``(None, usage)`` — emitted once after the stream ends, only when the
+                          upstream provided token-count data; ``usage`` is a dict
+                          with ``prompt_tokens`` and ``completion_tokens`` keys
 
     The gateway calls this for *both* streaming and non-streaming OpenAI
-    requests — for non-streaming we simply collect all yielded chunks.
+    requests — for non-streaming we simply collect all text fragments.
 
     Args:
         query:            The current user message (last in conversation).
@@ -98,7 +165,7 @@ async def stream_upstream_response(
         api_key_override: Per-request API key; falls back to settings.UPSTREAM_API_KEY.
 
     Yields:
-        str: Incremental text fragments from the upstream response.
+        UpstreamEvent: ``(text_fragment, None)`` or ``(None, usage_dict)``
 
     Raises:
         httpx.HTTPStatusError: Propagated if upstream returns a 4xx / 5xx status.
@@ -126,6 +193,8 @@ async def stream_upstream_response(
         len(history),
     )
 
+    usage_accum: dict[str, int] = {}
+
     async with httpx.AsyncClient(timeout=settings.UPSTREAM_TIMEOUT) as client:
         async with client.stream(
             "POST", url, json=payload, headers=headers
@@ -146,7 +215,10 @@ async def stream_upstream_response(
                     data = raw_line[5:].lstrip(" ")
                     text = _extract_text_from_sse_data(data)
                     if text:
-                        yield text
+                        yield (text, None)
+                    usage_fragment = _extract_usage_from_sse_data(data)
+                    if usage_fragment:
+                        usage_accum.update(usage_fragment)
 
                 elif raw_line.startswith("event:") or raw_line.startswith("id:"):
                     # Event-type / id lines — no text content, skip
@@ -156,4 +228,12 @@ async def stream_upstream_response(
                     # Some lightweight implementations omit the "data:" prefix
                     text = _extract_text_from_sse_data(raw_line)
                     if text:
-                        yield text
+                        yield (text, None)
+                    usage_fragment = _extract_usage_from_sse_data(raw_line)
+                    if usage_fragment:
+                        usage_accum.update(usage_fragment)
+
+    # Emit accumulated usage once after the stream is fully consumed, only if
+    # the upstream actually provided token counts.
+    if usage_accum:
+        yield (None, usage_accum)

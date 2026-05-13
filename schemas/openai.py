@@ -120,7 +120,7 @@ class ChatCompletionResponse(BaseModel):
     created: int = Field(default_factory=lambda: int(time.time()))
     model: str
     choices: list[Choice]
-    usage: Usage = Field(default_factory=Usage)
+    usage: Optional[Usage] = None
 
 
 # ── Streaming response chunks ─────────────────────────────────────────────────
