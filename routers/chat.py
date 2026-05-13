@@ -59,6 +59,24 @@ router = APIRouter()
 
 # ── Small helpers ─────────────────────────────────────────────────────────────
 
+_FORWARDED_PARAMS = (
+    "temperature",
+    "max_tokens",
+    "top_p",
+    "stop",
+    "presence_penalty",
+    "frequency_penalty",
+)
+
+
+def _generation_params(request: ChatCompletionRequest) -> dict:
+    """Extract generation parameters to forward to the upstream payload."""
+    return {
+        key: value
+        for key in _FORWARDED_PARAMS
+        if (value := getattr(request, key, None)) is not None
+    }
+
 
 def _new_id() -> str:
     return f"chatcmpl-{uuid.uuid4().hex[:24]}"
@@ -109,7 +127,9 @@ async def _stream_response(
     mode: Optional[str] = None  # None=detecting  "content"=streaming  "json"=buffering
 
     try:
-        async for raw_chunk in stream_upstream_response(query, history):
+        async for raw_chunk in stream_upstream_response(
+            query, history, generation_params=_generation_params(request)
+        ):
             buffer += raw_chunk
 
             if mode is None:
@@ -226,7 +246,9 @@ async def _complete_response(
     query, history = messages_to_upstream_format(request)
 
     full_text = ""
-    async for chunk in stream_upstream_response(query, history):
+    async for chunk in stream_upstream_response(
+        query, history, generation_params=_generation_params(request)
+    ):
         full_text += chunk
 
     raw_tool_calls = try_parse_tool_calls(full_text)
@@ -260,6 +282,12 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
     streaming flags) and returns properly shaped OpenAI responses.
     Tool calling is implemented via prompt injection into the upstream API.
     """
+    if body.n is not None and body.n != 1:
+        raise HTTPException(
+            status_code=422,
+            detail="Parameter 'n' must be 1; this gateway does not support multiple completions per request.",
+        )
+
     completion_id = _new_id()
     logger.info(
         "chat_completions  id=%s  model=%s  stream=%s  messages=%d  tools=%d",

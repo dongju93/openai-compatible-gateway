@@ -84,6 +84,7 @@ async def stream_upstream_response(
     query: str,
     history: list[dict],
     api_key_override: Optional[str] = None,
+    generation_params: Optional[dict] = None,
 ) -> AsyncIterator[str]:
     """
     Call the upstream API (streaming) and yield raw text chunks as they arrive.
@@ -115,6 +116,8 @@ async def stream_upstream_response(
         headers["Authorization"] = f"Bearer {effective_key}"
 
     payload: dict = {"query": query, "history": json.dumps(history), "stream": True}
+    if generation_params:
+        payload.update(generation_params)
 
     logger.debug(
         "Calling upstream  url=%s  query_len=%d  history_len=%d",

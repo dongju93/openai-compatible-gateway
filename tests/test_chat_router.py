@@ -293,6 +293,67 @@ class TestStreaming:
         assert finish
 
 
+# ── Parameter forwarding / validation tests ───────────────────────────────────
+
+
+class TestParameterHandling:
+    async def test_n_greater_than_1_returns_422(self, client: AsyncClient):
+        with patch("routers.chat.stream_upstream_response", new=make_text_stream("ok")):
+            resp = await client.post(
+                "/v1/chat/completions",
+                json={**SIMPLE_BODY, "n": 2},
+            )
+        assert resp.status_code == 422
+        assert "n" in resp.json()["detail"].lower()
+
+    async def test_n_equals_1_accepted(self, client: AsyncClient):
+        with patch("routers.chat.stream_upstream_response", new=make_text_stream("ok")):
+            resp = await client.post(
+                "/v1/chat/completions",
+                json={**SIMPLE_BODY, "n": 1},
+            )
+        assert resp.status_code == 200
+
+    async def test_generation_params_forwarded_to_upstream(self, client: AsyncClient):
+        captured: dict = {}
+
+        async def capturing_stream(query, history, *, generation_params=None, **_):
+            captured["generation_params"] = generation_params
+            yield "ok"
+
+        with patch("routers.chat.stream_upstream_response", new=capturing_stream):
+            resp = await client.post(
+                "/v1/chat/completions",
+                json={
+                    **SIMPLE_BODY,
+                    "temperature": 0.7,
+                    "max_tokens": 512,
+                    "top_p": 0.9,
+                    "stop": ["\n"],
+                },
+            )
+
+        assert resp.status_code == 200
+        params = captured["generation_params"]
+        assert params["temperature"] == 0.7
+        assert params["max_tokens"] == 512
+        assert params["top_p"] == 0.9
+        assert params["stop"] == ["\n"]
+
+    async def test_unset_generation_params_not_forwarded(self, client: AsyncClient):
+        """None-valued fields must not pollute the upstream payload."""
+        captured: dict = {}
+
+        async def capturing_stream(query, history, *, generation_params=None, **_):
+            captured["generation_params"] = generation_params
+            yield "ok"
+
+        with patch("routers.chat.stream_upstream_response", new=capturing_stream):
+            await client.post("/v1/chat/completions", json=SIMPLE_BODY)
+
+        assert captured["generation_params"] == {}
+
+
 # ── Utility endpoint tests ────────────────────────────────────────────────────
 
 
