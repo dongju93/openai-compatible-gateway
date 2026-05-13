@@ -114,7 +114,7 @@ async def stream_upstream_response(
     if effective_key:
         headers["Authorization"] = f"Bearer {effective_key}"
 
-    payload: dict = {"query": query, "history": history, "stream": True}
+    payload: dict = {"query": query, "history": json.dumps(history), "stream": True}
 
     logger.debug(
         "Calling upstream  url=%s  query_len=%d  history_len=%d",
