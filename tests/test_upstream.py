@@ -1,17 +1,29 @@
 """
 Unit tests for services/upstream.py
 
-Tests focus on _extract_text_from_sse_data — the multi-format SSE parser —
-since that is the only pure logic in upstream (the network I/O is tested
-indirectly via the router integration tests).
+Tests primarily focus on _extract_text_from_sse_data — the multi-format SSE
+parser — plus narrow HTTP-client edge cases around streaming response handling.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
+from typing import Any
 
+import httpx
+import pytest
 
+import services.upstream as upstream
 from services.upstream import _extract_text_from_sse_data
+
+
+class _AsyncSingleChunkStream(httpx.AsyncByteStream):
+    def __init__(self, chunk: bytes) -> None:
+        self._chunk = chunk
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield self._chunk
 
 
 class TestExtractTextFromSseData:
@@ -97,3 +109,28 @@ class TestExtractTextFromSseData:
 
     def test_none_input_returns_none(self):
         assert _extract_text_from_sse_data("") is None
+
+
+class TestStreamUpstreamResponse:
+    async def test_http_error_response_body_is_read_before_raise(self, monkeypatch):
+        real_async_client = httpx.AsyncClient
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                429,
+                stream=_AsyncSingleChunkStream(b"quota exceeded"),
+                request=request,
+            )
+
+        def make_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_async_client(*args, **kwargs)
+
+        monkeypatch.setattr(upstream.httpx, "AsyncClient", make_client)
+
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            async for _chunk in upstream.stream_upstream_response("Hello", []):
+                pass
+
+        assert exc_info.value.response.status_code == 429
+        assert exc_info.value.response.text == "quota exceeded"

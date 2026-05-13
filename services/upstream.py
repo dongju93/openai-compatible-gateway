@@ -127,6 +127,9 @@ async def stream_upstream_response(
         async with client.stream(
             "POST", url, json=payload, headers=headers
         ) as response:
+            if not response.is_success:
+                # Streaming responses do not expose .text unless the body is read.
+                await response.aread()
             response.raise_for_status()
 
             async for raw_line in response.aiter_lines():
