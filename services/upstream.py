@@ -24,6 +24,7 @@ Supported SSE data formats (tried in order)
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import AsyncIterator, Optional
@@ -141,36 +142,13 @@ def _extract_usage_from_sse_data(data: str) -> Optional[dict[str, int]]:
     return None
 
 
-async def stream_upstream_response(
+async def _stream_single_attempt(
     query: str,
     history: list[dict],
-    api_key_override: Optional[str] = None,
-    generation_params: Optional[dict] = None,
+    api_key_override: Optional[str],
+    generation_params: Optional[dict],
 ) -> AsyncIterator[UpstreamEvent]:
-    """
-    Call the upstream API (streaming) and yield events as ``(text, usage)`` tuples.
-
-    Each yielded tuple has exactly one non-None field:
-    • ``(text, None)``  — an incremental text fragment
-    • ``(None, usage)`` — emitted once after the stream ends, only when the
-                          upstream provided token-count data; ``usage`` is a dict
-                          with ``prompt_tokens`` and ``completion_tokens`` keys
-
-    The gateway calls this for *both* streaming and non-streaming OpenAI
-    requests — for non-streaming we simply collect all text fragments.
-
-    Args:
-        query:            The current user message (last in conversation).
-        history:          Conversation history in the upstream wire format.
-        api_key_override: Per-request API key; falls back to settings.UPSTREAM_API_KEY.
-
-    Yields:
-        UpstreamEvent: ``(text_fragment, None)`` or ``(None, usage_dict)``
-
-    Raises:
-        httpx.HTTPStatusError: Propagated if upstream returns a 4xx / 5xx status.
-        httpx.RequestError:    Propagated on network-level failures.
-    """
+    """One attempt at the upstream SSE stream — no retry logic here."""
     settings = get_settings()
     url = f"{settings.UPSTREAM_BASE_URL}{settings.UPSTREAM_CHAT_ENDPOINT}"
 
@@ -233,7 +211,77 @@ async def stream_upstream_response(
                     if usage_fragment:
                         usage_accum.update(usage_fragment)
 
-    # Emit accumulated usage once after the stream is fully consumed, only if
-    # the upstream actually provided token counts.
     if usage_accum:
         yield (None, usage_accum)
+
+
+async def stream_upstream_response(
+    query: str,
+    history: list[dict],
+    api_key_override: Optional[str] = None,
+    generation_params: Optional[dict] = None,
+) -> AsyncIterator[UpstreamEvent]:
+    """
+    Call the upstream API (streaming) and yield events as ``(text, usage)`` tuples.
+
+    Each yielded tuple has exactly one non-None field:
+    • ``(text, None)``  — an incremental text fragment
+    • ``(None, usage)`` — emitted once after the stream ends, only when the
+                          upstream provided token-count data; ``usage`` is a dict
+                          with ``prompt_tokens`` and ``completion_tokens`` keys
+
+    Transient upstream failures (5xx and network errors) are retried with
+    exponential backoff up to ``UPSTREAM_RETRY_ATTEMPTS`` total attempts.
+    4xx errors propagate immediately (retrying a client error is pointless).
+    Retries are suppressed once any text has been yielded — at that point the
+    response is already streaming to the caller and re-connecting would
+    produce duplicate content.
+
+    Args:
+        query:            The current user message (last in conversation).
+        history:          Conversation history in the upstream wire format.
+        api_key_override: Per-request API key; falls back to settings.UPSTREAM_API_KEY.
+
+    Yields:
+        UpstreamEvent: ``(text_fragment, None)`` or ``(None, usage_dict)``
+
+    Raises:
+        httpx.HTTPStatusError: Propagated if upstream returns a 4xx / 5xx status
+                               (after all retry attempts are exhausted for 5xx).
+        httpx.RequestError:    Propagated on network-level failures (after retries).
+    """
+    settings = get_settings()
+    max_attempts = settings.UPSTREAM_RETRY_ATTEMPTS
+    base_delay = settings.UPSTREAM_RETRY_BASE_DELAY
+
+    for attempt in range(max_attempts):
+        started = False
+        try:
+            async for event in _stream_single_attempt(
+                query, history, api_key_override, generation_params
+            ):
+                started = True
+                yield event
+            return
+        except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+            # Never retry once data has started flowing — the caller has already
+            # received partial content and a reconnect would duplicate it.
+            if started:
+                raise
+            # 4xx errors are client-side mistakes; retrying cannot fix them.
+            if (
+                isinstance(exc, httpx.HTTPStatusError)
+                and exc.response.status_code < 500
+            ):
+                raise
+            if attempt == max_attempts - 1:
+                raise
+            delay = base_delay * (2**attempt)
+            logger.warning(
+                "Upstream attempt %d/%d failed (%s), retrying in %.2fs",
+                attempt + 1,
+                max_attempts,
+                exc,
+                delay,
+            )
+            await asyncio.sleep(delay)

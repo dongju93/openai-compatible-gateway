@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from typing import Any
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -111,10 +112,19 @@ class TestExtractTextFromSseData:
         assert _extract_text_from_sse_data("") is None
 
 
+def _make_client_factory(handler: Any) -> Any:
+    """Return a drop-in replacement for ``httpx.AsyncClient`` backed by *handler*."""
+    real_async_client = httpx.AsyncClient
+
+    def make_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_async_client(*args, **kwargs)
+
+    return make_client
+
+
 class TestStreamUpstreamResponse:
     async def test_http_error_response_body_is_read_before_raise(self, monkeypatch):
-        real_async_client = httpx.AsyncClient
-
         async def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 429,
@@ -122,11 +132,9 @@ class TestStreamUpstreamResponse:
                 request=request,
             )
 
-        def make_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
-            kwargs["transport"] = httpx.MockTransport(handler)
-            return real_async_client(*args, **kwargs)
-
-        monkeypatch.setattr(upstream.httpx, "AsyncClient", make_client)
+        monkeypatch.setattr(
+            upstream.httpx, "AsyncClient", _make_client_factory(handler)
+        )
 
         with pytest.raises(httpx.HTTPStatusError) as exc_info:
             async for _text, _usage in upstream.stream_upstream_response("Hello", []):
@@ -134,6 +142,104 @@ class TestStreamUpstreamResponse:
 
         assert exc_info.value.response.status_code == 429
         assert exc_info.value.response.text == "quota exceeded"
+
+    # ── Retry behaviour ──────────────────────────────────────────────────────
+
+    async def test_5xx_is_retried_and_eventually_succeeds(self, monkeypatch):
+        """First attempt returns 503; second attempt returns a valid SSE stream."""
+        call_count = 0
+        sse_body = b'data: {"text": "hi"}\n\n'
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return httpx.Response(
+                    503, stream=_AsyncSingleChunkStream(b"down"), request=request
+                )
+            return httpx.Response(
+                200, stream=_AsyncSingleChunkStream(sse_body), request=request
+            )
+
+        monkeypatch.setattr(
+            upstream.httpx, "AsyncClient", _make_client_factory(handler)
+        )
+        monkeypatch.setattr(upstream.asyncio, "sleep", AsyncMock())
+
+        texts = [t async for t, _ in upstream.stream_upstream_response("Hello", [])]
+
+        assert texts == ["hi"]
+        assert call_count == 2
+
+    async def test_4xx_is_not_retried(self, monkeypatch):
+        """A 429 error should be raised immediately without any retry."""
+        call_count = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            return httpx.Response(
+                429, stream=_AsyncSingleChunkStream(b"rate limit"), request=request
+            )
+
+        monkeypatch.setattr(
+            upstream.httpx, "AsyncClient", _make_client_factory(handler)
+        )
+
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            async for _ in upstream.stream_upstream_response("Hello", []):
+                pass
+
+        assert exc_info.value.response.status_code == 429
+        assert call_count == 1  # no retry
+
+    async def test_exhausted_retries_raise_last_exception(self, monkeypatch):
+        """All attempts fail with 502 — the final exception must propagate."""
+        call_count = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            return httpx.Response(
+                502, stream=_AsyncSingleChunkStream(b"bad gateway"), request=request
+            )
+
+        monkeypatch.setattr(
+            upstream.httpx, "AsyncClient", _make_client_factory(handler)
+        )
+        monkeypatch.setattr(upstream.asyncio, "sleep", AsyncMock())
+
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            async for _ in upstream.stream_upstream_response("Hello", []):
+                pass
+
+        assert exc_info.value.response.status_code == 502
+        # Default UPSTREAM_RETRY_ATTEMPTS=3, so exactly 3 calls expected.
+        assert call_count == 3
+
+    async def test_network_error_is_retried(self, monkeypatch):
+        """A ConnectError on first attempt should trigger a retry."""
+        call_count = 0
+        sse_body = b'data: {"text": "recovered"}\n\n'
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise httpx.ConnectError("refused", request=request)
+            return httpx.Response(
+                200, stream=_AsyncSingleChunkStream(sse_body), request=request
+            )
+
+        monkeypatch.setattr(
+            upstream.httpx, "AsyncClient", _make_client_factory(handler)
+        )
+        monkeypatch.setattr(upstream.asyncio, "sleep", AsyncMock())
+
+        texts = [t async for t, _ in upstream.stream_upstream_response("Hello", [])]
+
+        assert texts == ["recovered"]
+        assert call_count == 2
 
 
 class TestExtractUsageFromSseData:

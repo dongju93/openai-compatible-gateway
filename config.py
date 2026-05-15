@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     UPSTREAM_TIMEOUT: float = Field(
         default=120.0, description="Timeout for upstream API requests in seconds"
     )
+    # Total number of attempts (1 = no retry).  Only 5xx and network errors are retried.
+    UPSTREAM_RETRY_ATTEMPTS: int = Field(
+        default=3,
+        description="Total upstream attempts before giving up (1 disables retries)",
+    )
+    # Base delay in seconds for exponential backoff: delay = base * 2^attempt
+    UPSTREAM_RETRY_BASE_DELAY: float = Field(
+        default=0.5, description="Base delay (seconds) for exponential-backoff retries"
+    )
 
     # ── gateway ───────────────────────────────────────────────────────────────
     LOG_LEVEL: str = Field(default="INFO", description="Python logging level")
