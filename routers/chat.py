@@ -143,7 +143,10 @@ async def _stream_response(
 
     try:
         async for raw_chunk, usage_data in stream_upstream_response(
-            query, history, api_key_override=api_key_override, generation_params=_generation_params(request)
+            query,
+            history,
+            api_key_override=api_key_override,
+            generation_params=_generation_params(request),
         ):
             if usage_data is not None:
                 usage_accum.update(usage_data)
@@ -271,7 +274,10 @@ async def _complete_response(
     full_text = ""
     usage_accum: dict[str, int] = {}
     async for chunk, usage_data in stream_upstream_response(
-        query, history, api_key_override=api_key_override, generation_params=_generation_params(request)
+        query,
+        history,
+        api_key_override=api_key_override,
+        generation_params=_generation_params(request),
     ):
         if usage_data is not None:
             usage_accum.update(usage_data)

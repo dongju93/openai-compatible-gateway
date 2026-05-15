@@ -160,7 +160,11 @@ async def _stream_single_attempt(
     if effective_key:
         headers["Authorization"] = f"Bearer {effective_key}"
 
-    payload: dict = {"query": query, "history": json.dumps(history), "stream": True}
+    payload: dict = {
+        "query": query,
+        "history": json.dumps(history) if history else [],
+        "stream": True,
+    }
     if generation_params:
         payload.update(generation_params)
 
