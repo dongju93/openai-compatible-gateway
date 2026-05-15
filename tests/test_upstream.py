@@ -124,6 +124,54 @@ def _make_client_factory(handler: Any) -> Any:
 
 
 class TestStreamUpstreamResponse:
+    async def test_upstream_payload_contains_only_query_and_history_strings(
+        self, monkeypatch
+    ):
+        captured_payload: dict[str, Any] = {}
+        sse_body = b'data: {"text": "ok"}\n\n'
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured_payload.update(json.loads(request.content.decode()))
+            return httpx.Response(
+                200, stream=_AsyncSingleChunkStream(sse_body), request=request
+            )
+
+        monkeypatch.setattr(
+            upstream.httpx, "AsyncClient", _make_client_factory(handler)
+        )
+
+        texts = [t async for t, _ in upstream.stream_upstream_response("Hello", [])]
+
+        assert texts == ["ok"]
+        assert set(captured_payload) == {"query", "history"}
+        assert captured_payload["query"] == "Hello"
+        assert captured_payload["history"] == "[]"
+        assert isinstance(captured_payload["query"], str)
+        assert isinstance(captured_payload["history"], str)
+
+    async def test_upstream_history_is_json_encoded_string(self, monkeypatch):
+        captured_payload: dict[str, Any] = {}
+        history = [{"role": "user", "content": "이전 질문"}]
+        sse_body = b'data: {"text": "ok"}\n\n'
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured_payload.update(json.loads(request.content.decode()))
+            return httpx.Response(
+                200, stream=_AsyncSingleChunkStream(sse_body), request=request
+            )
+
+        monkeypatch.setattr(
+            upstream.httpx, "AsyncClient", _make_client_factory(handler)
+        )
+
+        texts = [
+            t async for t, _ in upstream.stream_upstream_response("다음 질문", history)
+        ]
+
+        assert texts == ["ok"]
+        assert captured_payload["query"] == "다음 질문"
+        assert captured_payload["history"] == json.dumps(history, ensure_ascii=False)
+
     async def test_http_error_response_body_is_read_before_raise(self, monkeypatch):
         async def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(

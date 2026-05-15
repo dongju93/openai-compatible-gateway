@@ -146,7 +146,6 @@ async def _stream_single_attempt(
     query: str,
     history: list[dict],
     api_key_override: Optional[str],
-    generation_params: Optional[dict],
 ) -> AsyncIterator[UpstreamEvent]:
     """One attempt at the upstream SSE stream — no retry logic here."""
     settings = get_settings()
@@ -162,11 +161,8 @@ async def _stream_single_attempt(
 
     payload: dict = {
         "query": query,
-        "history": json.dumps(history) if history else [],
-        "stream": True,
+        "history": json.dumps(history, ensure_ascii=False),
     }
-    if generation_params:
-        payload.update(generation_params)
 
     logger.debug(
         "Calling upstream  url=%s  query_len=%d  history_len=%d",
@@ -223,7 +219,6 @@ async def stream_upstream_response(
     query: str,
     history: list[dict],
     api_key_override: Optional[str] = None,
-    generation_params: Optional[dict] = None,
 ) -> AsyncIterator[UpstreamEvent]:
     """
     Call the upstream API (streaming) and yield events as ``(text, usage)`` tuples.
@@ -261,9 +256,7 @@ async def stream_upstream_response(
     for attempt in range(max_attempts):
         started = False
         try:
-            async for event in _stream_single_attempt(
-                query, history, api_key_override, generation_params
-            ):
+            async for event in _stream_single_attempt(query, history, api_key_override):
                 started = True
                 yield event
             return

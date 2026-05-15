@@ -315,11 +315,13 @@ class TestParameterHandling:
             )
         assert resp.status_code == 200
 
-    async def test_generation_params_forwarded_to_upstream(self, client: AsyncClient):
+    async def test_generation_params_accepted_but_not_forwarded_to_upstream(
+        self, client: AsyncClient
+    ):
         captured: dict = {}
 
-        async def capturing_stream(query, history, *, generation_params=None, **_):
-            captured["generation_params"] = generation_params
+        async def capturing_stream(query, history, **kwargs):
+            captured["kwargs"] = kwargs
             yield ("ok", None)
 
         with patch("routers.chat.stream_upstream_response", new=capturing_stream):
@@ -335,24 +337,19 @@ class TestParameterHandling:
             )
 
         assert resp.status_code == 200
-        params = captured["generation_params"]
-        assert params["temperature"] == 0.7
-        assert params["max_tokens"] == 512
-        assert params["top_p"] == 0.9
-        assert params["stop"] == ["\n"]
+        assert "generation_params" not in captured["kwargs"]
 
     async def test_unset_generation_params_not_forwarded(self, client: AsyncClient):
-        """None-valued fields must not pollute the upstream payload."""
         captured: dict = {}
 
-        async def capturing_stream(query, history, *, generation_params=None, **_):
-            captured["generation_params"] = generation_params
+        async def capturing_stream(query, history, **kwargs):
+            captured["kwargs"] = kwargs
             yield ("ok", None)
 
         with patch("routers.chat.stream_upstream_response", new=capturing_stream):
             await client.post("/v1/chat/completions", json=SIMPLE_BODY)
 
-        assert captured["generation_params"] == {}
+        assert "generation_params" not in captured["kwargs"]
 
 
 # ── Utility endpoint tests ────────────────────────────────────────────────────

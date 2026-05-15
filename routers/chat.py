@@ -59,24 +59,6 @@ router = APIRouter()
 
 # ── Small helpers ─────────────────────────────────────────────────────────────
 
-_FORWARDED_PARAMS = (
-    "temperature",
-    "max_tokens",
-    "top_p",
-    "stop",
-    "presence_penalty",
-    "frequency_penalty",
-)
-
-
-def _generation_params(request: ChatCompletionRequest) -> dict:
-    """Extract generation parameters to forward to the upstream payload."""
-    return {
-        key: value
-        for key in _FORWARDED_PARAMS
-        if (value := getattr(request, key, None)) is not None
-    }
-
 
 def _new_id() -> str:
     return f"chatcmpl-{uuid.uuid4().hex[:24]}"
@@ -146,7 +128,6 @@ async def _stream_response(
             query,
             history,
             api_key_override=api_key_override,
-            generation_params=_generation_params(request),
         ):
             if usage_data is not None:
                 usage_accum.update(usage_data)
@@ -277,7 +258,6 @@ async def _complete_response(
         query,
         history,
         api_key_override=api_key_override,
-        generation_params=_generation_params(request),
     ):
         if usage_data is not None:
             usage_accum.update(usage_data)
