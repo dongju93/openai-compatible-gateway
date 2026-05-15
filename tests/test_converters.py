@@ -274,8 +274,11 @@ class TestLooksLikeJsonStart:
     def test_empty_string_returns_false(self):
         assert looks_like_json_start("") is False
 
-    def test_array_start_returns_false(self):
-        assert looks_like_json_start("[1,2,3]") is False
+    def test_array_start_returns_true(self):
+        assert looks_like_json_start("[1,2,3]") is True
+
+    def test_leading_whitespace_with_array_returns_true(self):
+        assert looks_like_json_start("  \n[") is True
 
 
 # ── make_delta_tool_calls ─────────────────────────────────────────────────────

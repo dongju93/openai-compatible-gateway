@@ -151,11 +151,11 @@ def messages_to_upstream_format(
 
 # ── Tool-call JSON detection ──────────────────────────────────────────────────
 
-_JSON_START_RE = re.compile(r"^\s*\{")
+_JSON_START_RE = re.compile(r"^\s*[{\[]")
 
 
 def looks_like_json_start(text: str) -> bool:
-    """Return True if the text appears to be the start of a JSON object."""
+    """Return True if the text appears to be the start of a JSON value (object or array)."""
     return bool(_JSON_START_RE.match(text))
 
 
