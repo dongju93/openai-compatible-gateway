@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     GATEWAY_PORT: int = Field(
         default=8080, description="Port to bind the gateway server"
     )
+    # Maximum allowed request body size in bytes (default 10 MiB).
+    # Requests with a larger Content-Length or actual body are rejected with 413.
+    MAX_REQUEST_BODY_SIZE: int = Field(
+        default=10 * 1024 * 1024,
+        description="Maximum request body size in bytes (default 10 MiB)",
+    )
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

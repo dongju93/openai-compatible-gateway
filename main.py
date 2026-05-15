@@ -15,7 +15,10 @@ Or via the helper in this file:
 
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -24,6 +27,98 @@ from fastapi.responses import JSONResponse
 
 from config import get_settings
 from routers.chat import router as chat_router
+
+
+# ── Body-size limiter ─────────────────────────────────────────────────────────
+
+
+class LimitRequestBodyMiddleware:
+    """Reject requests whose body exceeds *max_bytes* with HTTP 413.
+
+    Two-stage check:
+    1. Fast path — reject immediately when Content-Length header exceeds limit.
+    2. Slow path — buffer the streamed body, reject if accumulated bytes exceed
+       limit, otherwise replay the buffered body to the inner application so
+       the one-shot ASGI ``receive`` callable is not exhausted.
+    """
+
+    def __init__(self, app: Callable, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(
+        self,
+        scope: dict[str, Any],
+        receive: Callable[[], Coroutine[Any, Any, dict[str, Any]]],
+        send: Callable[[dict[str, Any]], Coroutine[Any, Any, None]],
+    ) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        for name, value in scope.get("headers", []):
+            if name == b"content-length":
+                try:
+                    if int(value) > self.max_bytes:
+                        await self._send_413(send)
+                        return
+                except ValueError:
+                    pass
+                break
+
+        chunks: list[bytes] = []
+        total = 0
+        more_body = True
+
+        while more_body:
+            message = await receive()
+            if message["type"] != "http.request":
+                continue
+            chunk = message.get("body", b"")
+            total += len(chunk)
+            if total > self.max_bytes:
+                await self._send_413(send)
+                return
+            chunks.append(chunk)
+            more_body = message.get("more_body", False)
+
+        full_body = b"".join(chunks)
+        replayed = False
+
+        async def replay_receive() -> dict[str, Any]:
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": full_body, "more_body": False}
+            return await receive()
+
+        await self.app(scope, replay_receive, send)
+
+    @staticmethod
+    async def _send_413(
+        send: Callable[[dict[str, Any]], Coroutine[Any, Any, None]],
+    ) -> None:
+        body = json.dumps(
+            {
+                "error": {
+                    "message": "Request body too large",
+                    "type": "invalid_request_error",
+                    "code": "request_too_large",
+                }
+            }
+        ).encode()
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 413,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode()),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body, "more_body": False})
+
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 settings = get_settings()
@@ -56,6 +151,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Outermost layer: reject bodies that exceed the configured limit before any
+# routing or further middleware runs. Added last so Starlette places it first
+# in the execution chain.
+app.add_middleware(LimitRequestBodyMiddleware, max_bytes=settings.MAX_REQUEST_BODY_SIZE)
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(chat_router)
