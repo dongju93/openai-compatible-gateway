@@ -141,13 +141,22 @@ class TestMessagesToBFormat:
         )
         _, history = messages_to_upstream_format(req)
 
-        tool_result_entries = [
-            h
-            for h in history
-            if h["role"] == "user" and "tool_call_id=call_2" in h["content"]
-        ]
-        assert len(tool_result_entries) == 1
-        assert "output: 42" in tool_result_entries[0]["content"]
+        # Tool results are now emitted as a structured JSON object so the
+        # format is language-neutral and symmetric with the tool_calls format.
+        tool_result_entry = next(
+            (
+                h
+                for h in history
+                if h["role"] == "user"
+                and '"tool_results"' in h["content"]
+                and "call_2" in h["content"]
+            ),
+            None,
+        )
+        assert tool_result_entry is not None
+        data = json.loads(tool_result_entry["content"])
+        assert data["tool_results"][0]["tool_call_id"] == "call_2"
+        assert data["tool_results"][0]["content"] == "output: 42"
 
     def test_no_user_message_returns_empty_query(self):
         req = make_request([Message(role="assistant", content="Hello")])

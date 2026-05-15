@@ -125,15 +125,23 @@ def messages_to_upstream_format(
                 history.append({"role": "assistant", "content": msg.content or ""})
 
         elif msg.role == "tool":
-            # Tool results are folded into the user turn so upstream sees the full context.
-            # The label makes it unambiguous that this is a tool response, not a
-            # new human question.
+            # Tool results are folded into the user turn using the same JSON
+            # protocol taught in the system prompt.  A structured object avoids
+            # relying on English prose that non-English-trained models may not
+            # associate with the preceding tool call.
             history.append(
                 {
                     "role": "user",
-                    "content": (
-                        f"[Tool result for tool_call_id={msg.tool_call_id}]\n"
-                        f"{msg.content or ''}"
+                    "content": json.dumps(
+                        {
+                            "tool_results": [
+                                {
+                                    "tool_call_id": msg.tool_call_id,
+                                    "content": msg.content or "",
+                                }
+                            ]
+                        },
+                        ensure_ascii=False,
                     ),
                 }
             )

@@ -51,6 +51,21 @@ Do NOT explain that you are calling a tool.
   ]
 }}
 
+## Tool Results
+
+After you call a tool the result will appear in the next user turn as:
+
+{{
+  "tool_results": [
+    {{
+      "tool_call_id": "<the id you used in your tool call>",
+      "content": "<the result returned by the tool>"
+    }}
+  ]
+}}
+
+Use the result to continue and answer the user's request.
+
 ## Critical Rules
 
 1. When calling a tool → output ONLY the JSON object above, nothing else.
