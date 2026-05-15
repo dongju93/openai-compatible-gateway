@@ -122,6 +122,7 @@ def _build_chunk(
 async def _stream_response(
     request: ChatCompletionRequest,
     completion_id: str,
+    api_key_override: Optional[str] = None,
 ) -> AsyncIterator[str]:
     """
     Core streaming generator — yields SSE-formatted strings.
@@ -142,7 +143,7 @@ async def _stream_response(
 
     try:
         async for raw_chunk, usage_data in stream_upstream_response(
-            query, history, generation_params=_generation_params(request)
+            query, history, api_key_override=api_key_override, generation_params=_generation_params(request)
         ):
             if usage_data is not None:
                 usage_accum.update(usage_data)
@@ -258,6 +259,7 @@ async def _stream_response(
 async def _complete_response(
     request: ChatCompletionRequest,
     completion_id: str,
+    api_key_override: Optional[str] = None,
 ) -> ChatCompletionResponse:
     """
     Collect the full upstream response and return a single ChatCompletionResponse.
@@ -269,7 +271,7 @@ async def _complete_response(
     full_text = ""
     usage_accum: dict[str, int] = {}
     async for chunk, usage_data in stream_upstream_response(
-        query, history, generation_params=_generation_params(request)
+        query, history, api_key_override=api_key_override, generation_params=_generation_params(request)
     ):
         if usage_data is not None:
             usage_accum.update(usage_data)
@@ -313,6 +315,13 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
             detail="Parameter 'n' must be 1; this gateway does not support multiple completions per request.",
         )
 
+    auth_header = request.headers.get("Authorization", "")
+    api_key_override: Optional[str] = None
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+        if token:
+            api_key_override = token
+
     completion_id = _new_id()
     logger.info(
         "chat_completions  id=%s  model=%s  stream=%s  messages=%d  tools=%d",
@@ -325,7 +334,7 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
 
     if body.stream:
         return StreamingResponse(
-            _stream_response(body, completion_id),
+            _stream_response(body, completion_id, api_key_override),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -336,7 +345,7 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
         )
 
     try:
-        response = await _complete_response(body, completion_id)
+        response = await _complete_response(body, completion_id, api_key_override)
         return response
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
