@@ -190,6 +190,97 @@ class TestMessagesToBFormat:
         assert "Custom instruction." in sys_content
 
 
+# ── array-content handling ────────────────────────────────────────────────────
+
+
+class TestArrayContent:
+    """messages_to_upstream_format must handle content as a list of content parts."""
+
+    def test_array_user_message_extracted_as_query(self):
+        req = make_request(
+            [
+                Message(
+                    role="user", content=[{"type": "text", "text": "Hello from array"}]
+                )
+            ]
+        )
+        query, _ = messages_to_upstream_format(req)
+        assert query == "Hello from array"
+
+    def test_multi_text_parts_are_joined(self):
+        req = make_request(
+            [
+                Message(
+                    role="user",
+                    content=[
+                        {"type": "text", "text": "Part one. "},
+                        {"type": "text", "text": "Part two."},
+                    ],
+                )
+            ]
+        )
+        query, _ = messages_to_upstream_format(req)
+        assert query == "Part one. Part two."
+
+    def test_non_text_parts_are_skipped(self):
+        req = make_request(
+            [
+                Message(
+                    role="user",
+                    content=[
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "https://example.com/img.png"},
+                        },
+                        {"type": "text", "text": "What is this?"},
+                    ],
+                )
+            ]
+        )
+        query, _ = messages_to_upstream_format(req)
+        assert query == "What is this?"
+
+    def test_array_system_message_injected_as_string(self):
+        req = make_request(
+            [
+                Message(
+                    role="system", content=[{"type": "text", "text": "Be concise."}]
+                ),
+                Message(role="user", content="Hi"),
+            ]
+        )
+        _, history = messages_to_upstream_format(req)
+        sys_entry = next(h for h in history if h["role"] == "system")
+        assert sys_entry["content"] == "Be concise."
+
+    def test_array_history_user_message_flattened(self):
+        req = make_request(
+            [
+                Message(role="user", content=[{"type": "text", "text": "First turn"}]),
+                Message(role="assistant", content="OK"),
+                Message(role="user", content="Second turn"),
+            ]
+        )
+        _, history = messages_to_upstream_format(req)
+        user_entries = [h for h in history if h["role"] == "user"]
+        assert user_entries[0]["content"] == "First turn"
+
+    def test_array_assistant_message_flattened_in_history(self):
+        req = make_request(
+            [
+                Message(role="user", content="q1"),
+                Message(
+                    role="assistant",
+                    content=[{"type": "text", "text": "Answer one."}],
+                ),
+                Message(role="user", content="q2"),
+            ]
+        )
+        _, history = messages_to_upstream_format(req)
+        asst_entries = [h for h in history if h["role"] == "assistant"]
+        assert asst_entries[0]["content"] == "Answer one."
+
+
 # ── try_parse_tool_calls ──────────────────────────────────────────────────────
 
 

@@ -34,6 +34,22 @@ from utils.prompt_injector import build_tool_system_prompt
 logger = logging.getLogger(__name__)
 
 
+# ── Content normalisation ─────────────────────────────────────────────────────
+
+
+def _flatten_content(content: str | list[dict] | None) -> str:
+    """Flatten OpenAI content (string or content-part array) to a plain string.
+
+    Non-text parts (image_url, file, etc.) are skipped because the upstream
+    only accepts plain text.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    return "".join(p.get("text", "") for p in content if p.get("type") == "text")
+
+
 # ── OpenAI messages → upstream (query, history) ──────────────────────────────
 
 
@@ -59,8 +75,8 @@ def messages_to_upstream_format(
     non_system = []
     for msg in messages:
         if msg.role == "system":
-            if msg.content:
-                system_parts.append(msg.content)
+            if _flatten_content(msg.content):
+                system_parts.append(_flatten_content(msg.content))
         else:
             non_system.append(msg)
 
@@ -83,7 +99,7 @@ def messages_to_upstream_format(
         query = ""
         history_messages = non_system
     else:
-        query = non_system[last_user_idx].content or ""
+        query = _flatten_content(non_system[last_user_idx].content)
         history_messages = non_system[:last_user_idx]
 
     # ── 4. Build the history list ─────────────────────────────────────────────
@@ -95,7 +111,7 @@ def messages_to_upstream_format(
 
     for msg in history_messages:
         if msg.role == "user":
-            history.append({"role": "user", "content": msg.content or ""})
+            history.append({"role": "user", "content": _flatten_content(msg.content)})
 
         elif msg.role == "assistant":
             if msg.tool_calls:
@@ -122,7 +138,9 @@ def messages_to_upstream_format(
                     }
                 )
             else:
-                history.append({"role": "assistant", "content": msg.content or ""})
+                history.append(
+                    {"role": "assistant", "content": _flatten_content(msg.content)}
+                )
 
         elif msg.role == "tool":
             # Tool results are folded into the user turn using the same JSON
@@ -137,7 +155,7 @@ def messages_to_upstream_format(
                             "tool_results": [
                                 {
                                     "tool_call_id": msg.tool_call_id,
-                                    "content": msg.content or "",
+                                    "content": _flatten_content(msg.content),
                                 }
                             ]
                         },

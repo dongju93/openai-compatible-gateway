@@ -60,14 +60,30 @@ class Message(BaseModel):
     """A single turn in the conversation."""
 
     role: Literal["system", "user", "assistant", "tool"]
-    # Plain text content (may be None for assistant turns that only have tool_calls)
-    content: Optional[str] = None
+    # Plain text OR array of content-part objects (OpenAI multimodal format).
+    # May be None for assistant turns that only have tool_calls.
+    content: Optional[Union[str, list[dict[str, Any]]]] = None
     # Present on assistant turns where the model calls one or more tools
     tool_calls: Optional[list[ToolCall]] = None
     # Present on tool-result turns (role == "tool")
     tool_call_id: Optional[str] = None
     # Optional display name
     name: Optional[str] = None
+
+
+# ── Request helpers ───────────────────────────────────────────────────────────
+
+
+class StreamOptions(BaseModel):
+    include_usage: Optional[bool] = None
+
+
+class ResponseFormat(BaseModel):
+    type: str
+    json_schema: Optional[dict[str, Any]] = None
+    name: Optional[str] = None
+    description: Optional[str] = None
+    strict: Optional[bool] = None
 
 
 # ── Request ───────────────────────────────────────────────────────────────────
@@ -81,13 +97,19 @@ class ChatCompletionRequest(BaseModel):
     tools: Optional[list[Tool]] = None
     tool_choice: Optional[Union[str, dict[str, Any]]] = None
     stream: Optional[bool] = False
+    stream_options: Optional[StreamOptions] = None
+    response_format: Optional[ResponseFormat] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
+    max_completion_tokens: Optional[int] = None
     top_p: Optional[float] = None
     n: Optional[int] = 1
     stop: Optional[Union[str, list[str]]] = None
     presence_penalty: Optional[float] = None
     frequency_penalty: Optional[float] = None
+    parallel_tool_calls: Optional[bool] = None
+    logprobs: Optional[bool] = None
+    top_logprobs: Optional[int] = None
     user: Optional[str] = None
 
 

@@ -351,6 +351,44 @@ class TestParameterHandling:
 
         assert "generation_params" not in captured["kwargs"]
 
+    async def test_array_content_user_message_returns_200(self, client: AsyncClient):
+        """content as a list of content parts must not cause a 422."""
+        with patch("routers.chat.stream_upstream_response", new=make_text_stream("ok")):
+            resp = await client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "gateway-adapter",
+                    "messages": [
+                        {"role": "user", "content": [{"type": "text", "text": "Hello"}]}
+                    ],
+                },
+            )
+        assert resp.status_code == 200
+
+    async def test_stream_options_field_accepted(self, client: AsyncClient):
+        with patch("routers.chat.stream_upstream_response", new=make_text_stream("ok")):
+            resp = await client.post(
+                "/v1/chat/completions",
+                json={**SIMPLE_BODY, "stream_options": {"include_usage": True}},
+            )
+        assert resp.status_code == 200
+
+    async def test_response_format_field_accepted(self, client: AsyncClient):
+        with patch("routers.chat.stream_upstream_response", new=make_text_stream("ok")):
+            resp = await client.post(
+                "/v1/chat/completions",
+                json={**SIMPLE_BODY, "response_format": {"type": "json_object"}},
+            )
+        assert resp.status_code == 200
+
+    async def test_parallel_tool_calls_field_accepted(self, client: AsyncClient):
+        with patch("routers.chat.stream_upstream_response", new=make_text_stream("ok")):
+            resp = await client.post(
+                "/v1/chat/completions",
+                json={**SIMPLE_BODY, "parallel_tool_calls": False},
+            )
+        assert resp.status_code == 200
+
 
 # ── Utility endpoint tests ────────────────────────────────────────────────────
 
